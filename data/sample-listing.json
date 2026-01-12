@@ -1,0 +1,11 @@
+{
+  "title": "Modern Family Home in Prime Location",
+  "price": "$1,200,000",
+  "address": "Auckland, New Zealand",
+  "images": [
+    "https://picsum.photos/1200/800?image=1011",
+    "https://picsum.photos/1200/800?image=1025",
+    "https://picsum.photos/1200/800?image=1036"
+  ],
+  "script": "Beautifully designed family home with open plan living."
+}
