@@ -1,0 +1,30 @@
+{
+  "ffmpeg": {
+    "path": "C:\\ffmpeg\\bin\\ffmpeg.exe",
+    "ffprobePath": "C:\\ffmpeg\\bin\\ffprobe.exe"
+  },
+  "video": {
+    "format": "horizontal",
+    "imageDurationSeconds": 3,
+    "fps": 30,
+    "formats": {
+      "horizontal": {
+        "width": 1920,
+        "height": 1080
+      },
+      "vertical": {
+        "width": 1080,
+        "height": 1920
+      }
+    }
+  },
+  "audio": {
+    "path": "assets/voiceover.wav",
+    "sampleRate": 48000,
+    "channels": 2
+  },
+  "output": {
+    "directory": "output",
+    "filename": "final-video.mp4"
+  }
+}
