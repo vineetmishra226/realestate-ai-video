@@ -2,96 +2,183 @@ const fs = require("fs");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
 const axios = require("axios");
+const config = require("../config");
+const { getImageSource } = require("../utils/image-source");
 
-ffmpeg.setFfmpegPath("C:\\ffmpeg\\bin\\ffmpeg.exe");
-ffmpeg.setFfprobePath("C:\\ffmpeg\\bin\\ffprobe.exe");
+/* =========================
+   FFmpeg setup
+========================= */
+ffmpeg.setFfmpegPath(config.ffmpeg.path);
+ffmpeg.setFfprobePath(config.ffmpeg.ffprobePath);
 
+/* =========================
+   Paths
+========================= */
 const PREVIEW_PATH = path.join(__dirname, "../../preview/listing-preview.json");
 const ASSETS_DIR = path.join(__dirname, "../../assets/render");
-const OUTPUT_DIR = path.join(__dirname, "../../output");
-const TEMP_VIDEO = path.join(OUTPUT_DIR, "temp-video.mp4");
-const FINAL_VIDEO = path.join(OUTPUT_DIR, "final-video.mp4");
-const AUDIO_PATH = path.join(__dirname, "../../assets/voiceover.wav");
+const NORMALIZED_DIR = path.join(ASSETS_DIR, "normalized");
+const OUTPUT_DIR = path.join(__dirname, "../../", config.output.directory);
+const AUDIO_PATH = path.join(__dirname, "../../", config.audio.path);
 
+/* =========================
+   Helpers
+========================= */
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-async function downloadImage(url, index) {
-  const imgPath = path.join(ASSETS_DIR, `img_${index}.jpg`);
-  const response = await axios.get(url, { responseType: "stream" });
-
-  return new Promise(resolve => {
-    response.data.pipe(fs.createWriteStream(imgPath)).on("finish", () => {
-      resolve(imgPath);
-    });
+function cleanDir(dir) {
+  if (!fs.existsSync(dir)) return;
+  fs.readdirSync(dir).forEach(item => {
+    const full = path.join(dir, item);
+    fs.rmSync(full, { recursive: true, force: true });
   });
 }
 
-async function prepareImages(images) {
-  ensureDir(ASSETS_DIR);
-  fs.readdirSync(ASSETS_DIR).forEach(f =>
-    fs.unlinkSync(path.join(ASSETS_DIR, f))
-  );
-
-  const paths = [];
-  for (let i = 0; i < images.length; i++) {
-    paths.push(await downloadImage(images[i], i));
+function safeUnlink(file) {
+  if (fs.existsSync(file)) {
+    try { fs.unlinkSync(file); } catch (_) {}
   }
-  return paths;
 }
 
-async function createSlideshow(imagePaths) {
+/* =========================
+   Image handling
+========================= */
+async function fetchImage(src, index) {
+  const rawPath = path.join(ASSETS_DIR, `raw_${index}`);
+
+  if (src.startsWith("http")) {
+    const res = await axios.get(src, { responseType: "arraybuffer" });
+    fs.writeFileSync(rawPath, res.data);
+  } else {
+    fs.copyFileSync(src, rawPath);
+  }
+
+  return rawPath;
+}
+
+async function normalizeImage(inputPath, index, width, height) {
+  const outPath = path.join(NORMALIZED_DIR, `img_${index}.jpg`);
+
   return new Promise((resolve, reject) => {
-    let cmd = ffmpeg();
-
-    imagePaths.forEach(img => {
-      cmd = cmd.input(img).inputOptions(["-loop 1", "-t 3"]);
-    });
-
-    cmd
-      .on("start", console.log)
-      .on("error", reject)
-      .on("end", resolve)
+    ffmpeg(inputPath)
       .outputOptions([
-        "-c:v libx264",
-        "-pix_fmt yuv420p",
-        "-profile:v high",
-        "-level 4.2",
-        "-r 30",
-        "-shortest"
+        "-y",
+        `-vf scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
+        "-pix_fmt yuv420p"
       ])
-      .save(TEMP_VIDEO);
+      .output(outPath)
+      .on("error", reject)
+      .on("end", () => resolve(outPath))
+      .run();
   });
 }
 
-async function addAudio() {
+async function prepareImages(images, plan) {
+  ensureDir(ASSETS_DIR);
+  ensureDir(NORMALIZED_DIR);
+
+  cleanDir(ASSETS_DIR);
+  ensureDir(NORMALIZED_DIR);
+
+  for (let i = 0; i < images.length; i++) {
+    const raw = await fetchImage(images[i], i);
+    await normalizeImage(
+      raw,
+      i,
+      plan.video.width,
+      plan.video.height
+    );
+    safeUnlink(raw);
+  }
+
+  const normalized = fs
+    .readdirSync(NORMALIZED_DIR)
+    .filter(f => f.endsWith(".jpg"));
+
+  if (normalized.length === 0) {
+    throw new Error("Image normalization failed");
+  }
+}
+
+/* =========================
+   Video creation
+========================= */
+async function createVideoFromImages(plan, tempVideoPath) {
+  const pattern = path
+    .join(NORMALIZED_DIR, "img_%d.jpg")
+    .replace(/\\/g, "/");
+
   return new Promise((resolve, reject) => {
     ffmpeg()
-      .input(TEMP_VIDEO)
+      .input(pattern)
+      .inputOptions([
+        "-start_number 0",
+        `-framerate 1/${config.video.imageDurationSeconds}`
+      ])
+      .outputOptions([
+        "-y",
+        "-c:v", plan.video.codec,
+        "-pix_fmt yuv420p",
+        "-profile:v", plan.video.profile,
+        "-level", plan.video.level,
+        "-preset", plan.video.preset,
+        "-crf", String(plan.video.crf),
+        `-r ${plan.video.fps}`,
+        "-movflags +faststart"
+      ])
+      .output(tempVideoPath)
+      .on("error", reject)
+      .on("end", resolve)
+      .run();
+  });
+}
+
+/* =========================
+   Add audio
+========================= */
+async function addAudio(plan, tempVideoPath, finalVideoPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg()
+      .input(tempVideoPath)
       .input(AUDIO_PATH)
       .outputOptions([
+        "-y",
+        "-map 0:v:0",
+        "-map 1:a:0",
         "-c:v copy",
-        "-c:a aac",
-        "-ac 2",
-        "-ar 48000",
+        "-c:a", plan.audio.codec,
+        "-b:a", plan.audio.bitrate,
         "-movflags +faststart",
         "-shortest"
       ])
+      .output(finalVideoPath)
       .on("error", reject)
       .on("end", resolve)
-      .save(FINAL_VIDEO);
+      .run();
   });
 }
 
-async function renderVideo() {
+/* =========================
+   Public API
+========================= */
+async function renderVideo(plan) {
+  if (!plan) throw new Error("Render plan missing");
+
   ensureDir(OUTPUT_DIR);
 
+  const tempVideoPath = path.join(OUTPUT_DIR, "temp-video.mp4");
+  const finalVideoPath = path.join(
+    OUTPUT_DIR,
+    plan.output.filename
+  );
+
   if (!fs.existsSync(PREVIEW_PATH)) {
-    throw new Error("listing-preview.json not found");
+    throw new Error("listing-preview.json missing");
   }
+
   if (!fs.existsSync(AUDIO_PATH)) {
-    throw new Error("voiceover.wav not found");
+    throw new Error("Audio file missing");
   }
 
   const preview = JSON.parse(fs.readFileSync(PREVIEW_PATH, "utf-8"));
@@ -99,13 +186,26 @@ async function renderVideo() {
     throw new Error("No images available");
   }
 
-  const imagePaths = await prepareImages(preview.images);
-  await createSlideshow(imagePaths);
-  await addAudio();
+  const source = getImageSource(preview.images);
 
-  fs.unlinkSync(TEMP_VIDEO);
+  console.log(
+    source.type === "uploaded"
+      ? "📸 Using agent-uploaded images"
+      : "🌐 Using listing images"
+  );
 
-  console.log("✅ Final video created:", FINAL_VIDEO);
+  console.log("🎬 Normalizing images...");
+  await prepareImages(source.images, plan);
+
+  console.log("🎞 Creating video...");
+  await createVideoFromImages(plan, tempVideoPath);
+
+  console.log("🔊 Adding audio...");
+  await addAudio(plan, tempVideoPath, finalVideoPath);
+
+  safeUnlink(tempVideoPath);
+
+  console.log("✅ Final video created:", finalVideoPath);
 }
 
 module.exports = { renderVideo };
