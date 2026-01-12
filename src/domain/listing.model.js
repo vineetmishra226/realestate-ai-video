@@ -7,13 +7,13 @@ class Listing {
     this.script = script;
   }
 
-  isValid() {
-    return (
-      typeof this.title === "string" &&
-      Array.isArray(this.images) &&
-      this.images.length > 0
-    );
-  }
+isValid() {
+  return (
+    typeof this.title === "string" &&
+    Array.isArray(this.images) &&
+    this.images.length > 0
+  );
+}
 }
 
 module.exports = Listing;

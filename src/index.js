@@ -1,24 +1,17 @@
-const Listing = require("./domain/listing.model");
-const renderVideo = require("./pipelines/video.pipeline");
-const paths = require("./config/paths.config");
-const fs = require("fs");
+const fetchListing = require("./services/listing-fetch.service");
+const mapListing = require("./domain/listing.mapper");
+const { validateListing } = require("./domain/listing.schema");
+const writePreview = require("./utils/preview-writer");
 
 async function run() {
-  const images = fs
-    .readdirSync(paths.assets.images)
-    .map(f => `${paths.assets.images}/${f}`);
+  const rawListing = await fetchListing();
+  const listing = mapListing(rawListing);
 
-  const listing = new Listing({
-    title: "Sample Listing",
-    price: "$1,200,000",
-    address: "Auckland",
-    images,
-    script: "Beautiful family home in prime location"
-  });
+  validateListing(listing);
 
-  await renderVideo(listing);
+  writePreview(listing);
 
-  console.log("✅ Video created successfully");
+  console.log("✅ Listing preview generated");
 }
 
 run().catch(console.error);
