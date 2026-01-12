@@ -1,0 +1,13 @@
+file 'C:/realestate-ai-video/assets/images/img_0.jpg'
+duration 4
+file 'C:/realestate-ai-video/assets/images/img_1.jpg'
+duration 4
+file 'C:/realestate-ai-video/assets/images/img_2.jpg'
+duration 4
+file 'C:/realestate-ai-video/assets/images/img_3.jpg'
+duration 4
+file 'C:/realestate-ai-video/assets/images/img_4.jpg'
+duration 4
+file 'C:/realestate-ai-video/assets/images/img_5.jpg'
+duration 4
+file 'C:/realestate-ai-video/assets/images/img_5.jpg'
