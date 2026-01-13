@@ -1,46 +1,25 @@
 /**
  * CLI entry point
- *
- * Commands:
- *   node app.js preview
- *   node app.js render
- *   node app.js render --profile youtube
- *   node app.js render --profile instagram
  */
 
 const fs = require("fs");
 const path = require("path");
-const renderProfiles = require("./render-profiles");
+
+const { buildRenderPlan } = require("./src/video/video-pipeline");
 
 const command = process.argv[2];
 const args = process.argv.slice(3);
 
-// ---------------------------
-// Parse --profile argument
-// ---------------------------
-let profileKey = "youtube"; // default
+let profile = "landscape";
+let preset = "high";
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--profile" && args[i + 1]) {
-    profileKey = args[i + 1];
+    profile = args[i + 1];
   }
-}
-
-// Validate render profile (only needed for render)
-let profile = null;
-if (command === "render") {
-  profile = renderProfiles[profileKey];
-
-  if (!profile) {
-    console.error(`❌ Unknown render profile: ${profileKey}`);
-    console.log("Available profiles:");
-    Object.keys(renderProfiles).forEach((key) => {
-      console.log(`  - ${key}`);
-    });
-    process.exit(1);
+  if (args[i] === "--preset" && args[i + 1]) {
+    preset = args[i + 1];
   }
-
-  console.log(`🎯 Using render profile: ${profile.label}`);
 }
 
 async function run() {
@@ -48,8 +27,6 @@ async function run() {
     switch (command) {
       case "preview": {
         const { showAgentPreview } = require("./src/tools/agent-preview");
-
-        console.log("🧾 Showing agent preview...");
         showAgentPreview();
         break;
       }
@@ -74,11 +51,18 @@ async function run() {
           fs.readFileSync(previewPath, "utf-8")
         );
 
-        // Convert preview → listing domain object
         const listing = adaptPreviewToListing(previewJson);
 
-        console.log("🎬 Starting video render...");
-        await renderVideo(listing, profile); // 🔑 profile passed here
+        const renderPlan = buildRenderPlan({
+          profile,
+          preset,
+          outputDir: process.cwd()
+        });
+
+        console.log("🎬 Render plan:");
+        console.log(renderPlan);
+
+        await renderVideo(listing, renderPlan);
 
         console.log("✅ Video render completed");
         break;
@@ -86,12 +70,6 @@ async function run() {
 
       default:
         console.error(`❌ Unknown command: ${command}`);
-        console.log("");
-        console.log("Available commands:");
-        console.log("  node app.js preview");
-        console.log("  node app.js render");
-        console.log("  node app.js render --profile youtube");
-        console.log("  node app.js render --profile instagram");
         process.exit(1);
     }
   } catch (err) {

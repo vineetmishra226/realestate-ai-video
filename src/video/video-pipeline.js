@@ -11,7 +11,6 @@ const high = require("./presets/high-quality");
 
 /**
  * Registry
- * Keeps things explicit and predictable
  */
 const PROFILES = {
   landscape,
@@ -42,6 +41,7 @@ function buildRenderPlan(options = {}) {
     throw new Error(`Unknown quality preset: ${presetName}`);
   }
 
+  const outputDir = options.outputDir || process.cwd();
   const outputFileName = `${profile.name}-${preset.name}.mp4`;
 
   return {
@@ -49,8 +49,8 @@ function buildRenderPlan(options = {}) {
     preset,
 
     output: {
-      filename: outputFileName,
-      directory: "output"
+      path: path.join(outputDir, outputFileName),
+      filename: outputFileName
     },
 
     video: {
@@ -73,5 +73,7 @@ function buildRenderPlan(options = {}) {
 }
 
 module.exports = {
-  buildRenderPlan
+  buildRenderPlan,
+  PROFILES,
+  PRESETS
 };
