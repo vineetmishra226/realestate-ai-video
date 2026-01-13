@@ -1,30 +1,21 @@
 const ffmpeg = require("../services/ffmpeg.service");
-const videoConfig = require("../config/video.config");
 const paths = require("../config/paths.config");
 
 /**
- * Render final video
- * @param {Object} listing - validated listing domain object
- * @param {Object} profile - optional render profile (Phase 6.4)
+ * Render final video using a render plan
+ * @param {Object} listing
+ * @param {Object} renderPlan
  */
-module.exports = async function renderVideo(listing, profile) {
+module.exports = async function renderVideo(listing, renderPlan) {
   if (!listing.isValid()) {
     throw new Error("Invalid listing data");
   }
 
-  const images = listing.images;
+  if (!renderPlan) {
+    throw new Error("Render plan is required (Phase 6.6)");
+  }
 
-  // ---------------------------
-  // Resolve output settings
-  // ---------------------------
-  const output = {
-    width: profile?.width ?? videoConfig.output.width,
-    height: profile?.height ?? videoConfig.output.height,
-    fps: profile?.fps ?? videoConfig.output.fps,
-    videoBitrate: profile?.videoBitrate,
-    audioBitrate: profile?.audioBitrate,
-    outputFile: profile?.outputFile ?? paths.output.video
-  };
+  const images = listing.images;
 
   return new Promise((resolve, reject) => {
     let command = ffmpeg();
@@ -35,7 +26,7 @@ module.exports = async function renderVideo(listing, profile) {
     images.forEach((img) => {
       command = command.input(img).inputOptions([
         "-loop 1",
-        `-t ${videoConfig.timing.imageDurationSeconds}`
+        "-t 3"
       ]);
     });
 
@@ -50,8 +41,8 @@ module.exports = async function renderVideo(listing, profile) {
     const videoFilters = images
       .map(
         (_, i) =>
-          `[${i}:v]scale=${output.width}:${output.height}:force_original_aspect_ratio=decrease,` +
-          `pad=${output.width}:${output.height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}]`
+          `[${i}:v]scale=${renderPlan.video.width}:${renderPlan.video.height}:force_original_aspect_ratio=decrease,` +
+          `pad=${renderPlan.video.width}:${renderPlan.video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}]`
       )
       .join(";");
 
@@ -59,9 +50,6 @@ module.exports = async function renderVideo(listing, profile) {
       images.map((_, i) => `[v${i}]`).join("") +
       `concat=n=${images.length}:v=1:a=0[outv]`;
 
-    // ---------------------------
-    // FFmpeg pipeline
-    // ---------------------------
     command
       .complexFilter([
         `${videoFilters};${concatFilter}`,
@@ -75,22 +63,19 @@ module.exports = async function renderVideo(listing, profile) {
       .outputOptions([
         "-map [outv]",
         "-map [outa]",
-        `-c:v ${videoConfig.video.codec}`,
-        `-pix_fmt ${videoConfig.video.pixelFormat}`,
-        `-profile:v ${videoConfig.video.profile}`,
-        `-level ${videoConfig.video.level}`,
-        `-r ${output.fps}`,
-        ...(output.videoBitrate ? [`-b:v ${output.videoBitrate}`] : []),
-        `-c:a ${videoConfig.audio.codec}`,
-        ...(output.audioBitrate ? [`-b:a ${output.audioBitrate}`] : []),
-        "-profile:a aac_low",
-        `-ac ${videoConfig.audio.channels}`,
-        `-ar ${videoConfig.audio.sampleRate}`,
+        `-c:v ${renderPlan.video.codec}`,
+        `-preset ${renderPlan.video.preset}`,
+        `-profile:v ${renderPlan.video.profile}`,
+        `-level ${renderPlan.video.level}`,
+        `-r ${renderPlan.video.fps}`,
+        ...(renderPlan.video.crf ? [`-crf ${renderPlan.video.crf}`] : []),
+        `-c:a ${renderPlan.audio.codec}`,
+        ...(renderPlan.audio.bitrate ? [`-b:a ${renderPlan.audio.bitrate}`] : []),
         "-movflags +faststart",
         "-shortest",
         "-y"
       ])
-      .save(output.outputFile)
+      .save(renderPlan.output.path)
       .on("end", resolve)
       .on("error", reject);
   });
