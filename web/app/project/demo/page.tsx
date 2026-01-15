@@ -13,11 +13,11 @@ import { CSS } from "@dnd-kit/utilities";
 /* ---------------- Types ---------------- */
 
 type Tab = "images" | "settings" | "render";
-type RenderState = "idle" | "rendering" | "completed";
+type RenderState = "idle" | "rendering" | "completed" | "failed";
 
 type ImageItem = {
   id: string;
-  url: string; // served by backend (/uploads/...)
+  url: string;
 };
 
 /* ---------------- Page ---------------- */
@@ -27,10 +27,11 @@ export default function ProjectDemoPage() {
   const [selectedImages, setSelectedImages] = useState<ImageItem[]>([]);
   const [renderState, setRenderState] = useState<RenderState>("idle");
   const [progress, setProgress] = useState(0);
+  const [renderedVideo, setRenderedVideo] = useState<string | null>(null);
 
-  const BACKEND_BASE = "http://localhost:3000";
+  const BACKEND_BASE = "http://localhost:4000";
 
-  /* ---------- Upload to backend ---------- */
+  /* ---------- Upload ---------- */
 
   async function handleFiles(files: FileList | null) {
     if (!files) return;
@@ -44,10 +45,7 @@ export default function ProjectDemoPage() {
 
     const response = await fetch(
       `${BACKEND_BASE}/api/upload-images`,
-      {
-        method: "POST",
-        body: formData,
-      }
+      { method: "POST", body: formData }
     );
 
     const result = await response.json();
@@ -71,7 +69,7 @@ export default function ProjectDemoPage() {
     setSelectedImages(prev => prev.filter(i => i.id !== img.id));
   }
 
-  /* ---------- Drag & Drop ---------- */
+  /* ---------- Drag ---------- */
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
@@ -84,50 +82,76 @@ export default function ProjectDemoPage() {
     });
   }
 
-  /* ---------- Fake Render Progress (unchanged) ---------- */
+  /* ---------- Render ---------- */
 
-  useEffect(() => {
-    if (renderState !== "rendering") return;
-
+  async function startRender() {
+    setActiveTab("render");
+    setRenderState("rendering");
     setProgress(0);
-    const timer = setInterval(() => {
-      setProgress(p => {
-        if (p >= 100) {
-          clearInterval(timer);
-          setRenderState("completed");
-          return 100;
-        }
-        return p + 10;
-      });
-    }, 400);
+    setRenderedVideo(null);
 
-    return () => clearInterval(timer);
-  }, [renderState]);
+    const response = await fetch(
+      `${BACKEND_BASE}/api/render/job`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: "demo",
+          profile: "landscape",
+          preset: "high",
+          images: selectedImages.map(img =>
+            img.url.replace(BACKEND_BASE, "")
+          ),
+        }),
+      }
+    );
+
+    const result = await response.json();
+    pollJob(result.jobId);
+  }
+
+  function pollJob(jobId: string) {
+    const timer = setInterval(async () => {
+      const res = await fetch(
+        `${BACKEND_BASE}/api/render/job/${jobId}`
+      );
+      const data = await res.json();
+
+      if (!data.success) return;
+
+      setProgress(data.job.progress || 0);
+
+      if (data.job.status === "completed") {
+        clearInterval(timer);
+        setRenderState("completed");
+        setRenderedVideo(
+          `${BACKEND_BASE}${data.job.outputVideo}`
+        );
+      }
+
+      if (data.job.status === "failed") {
+        clearInterval(timer);
+        setRenderState("failed");
+      }
+    }, 1000);
+  }
 
   return (
     <div className="h-screen flex flex-col bg-slate-50">
-      {/* Header */}
       <header className="h-14 bg-white border-b flex items-center justify-between px-6">
-        <div className="flex items-center gap-3">
-          <div className="h-7 w-7 rounded-md bg-teal-500 text-white flex items-center justify-center text-sm">
-            ▶
-          </div>
-          <span className="font-semibold text-slate-800">
-            Demo Property Video
-          </span>
-          <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs">
-            {renderState === "completed" ? "Completed" : "Draft"}
-          </span>
-        </div>
+        <span className="font-semibold text-slate-800">
+          Demo Property Video
+        </span>
 
         <button
-          onClick={() => {
-            setActiveTab("render");
-            setRenderState("rendering");
-          }}
-          disabled={renderState === "rendering" || selectedImages.length === 0}
+          onClick={startRender}
+          disabled={
+            renderState === "rendering" ||
+            selectedImages.length === 0
+          }
           className={`px-4 py-2 rounded-lg text-sm font-medium text-white ${
-            renderState === "rendering" || selectedImages.length === 0
+            renderState === "rendering" ||
+            selectedImages.length === 0
               ? "bg-slate-400"
               : "bg-teal-500 hover:bg-teal-600"
           }`}
@@ -137,115 +161,62 @@ export default function ProjectDemoPage() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <aside className="w-72 bg-white border-r">
-          <div className="px-5 py-4 border-b">
-            <h2 className="text-sm font-semibold">Upload images</h2>
-            <p className="text-xs text-slate-500">
-              JPG or PNG recommended
-            </p>
-          </div>
-
-          <div className="p-4">
-            <label className="block w-full cursor-pointer rounded-lg border-2 border-dashed border-slate-300 p-6 text-center hover:border-teal-400">
-              <input
-                type="file"
-                multiple
-                accept="image/*"
-                className="hidden"
-                onChange={e => handleFiles(e.target.files)}
-              />
-              <p className="text-sm font-medium text-slate-600">
-                Click to upload
-              </p>
-              <p className="text-xs text-slate-400 mt-1">
-                or drag & drop
-              </p>
-            </label>
-          </div>
+        <aside className="w-72 bg-white border-r p-4">
+          <input
+            type="file"
+            multiple
+            accept="image/*"
+            onChange={e => handleFiles(e.target.files)}
+          />
         </aside>
 
-        {/* Main */}
-        <section className="flex-1 flex flex-col">
-          {/* Tabs */}
-          <div className="bg-white border-b px-6">
-            <nav className="flex gap-6">
-              <Tab label="Images" active={activeTab === "images"} onClick={() => setActiveTab("images")} />
-              <Tab label="Video settings" active={activeTab === "settings"} onClick={() => setActiveTab("settings")} />
-              <Tab label="Preview & render" active={activeTab === "render"} onClick={() => setActiveTab("render")} />
-            </nav>
-          </div>
+        <section className="flex-1 p-8">
+          <DndContext
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={selectedImages.map(i => i.id)}
+              strategy={rectSortingStrategy}
+            >
+              <div className="grid grid-cols-4 gap-6">
+                {selectedImages.map((img, index) => (
+                  <SortableImage
+                    key={img.id}
+                    img={img}
+                    index={index}
+                    onRemove={removeImage}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
 
-          {/* Content */}
-          <div className="flex-1 overflow-y-auto p-8">
-            {activeTab === "images" && (
-              <ImagesTab
-                images={selectedImages}
-                onDragEnd={handleDragEnd}
-                onRemove={removeImage}
-              />
-            )}
+          {renderState === "rendering" && (
+            <div className="mt-6">
+              <div className="h-2 bg-slate-200 rounded overflow-hidden">
+                <div
+                  className="h-full bg-teal-500 transition-all"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
+          )}
 
-            {activeTab === "render" && (
-              <RenderTab
-                images={selectedImages}
-                state={renderState}
-                progress={progress}
-              />
-            )}
-
-            {activeTab === "settings" && (
-              <p className="text-slate-500">
-                Video settings coming next…
-              </p>
-            )}
-          </div>
+          {renderedVideo && (
+            <video
+              src={renderedVideo}
+              controls
+              className="mt-6 w-full rounded-xl"
+            />
+          )}
         </section>
       </div>
     </div>
   );
 }
 
-/* ---------------- Images Tab ---------------- */
-
-function ImagesTab({
-  images,
-  onDragEnd,
-  onRemove,
-}: {
-  images: ImageItem[];
-  onDragEnd: (e: DragEndEvent) => void;
-  onRemove: (img: ImageItem) => void;
-}) {
-  return (
-    <>
-      <h1 className="text-xl font-semibold text-slate-800">
-        Images in your video
-      </h1>
-      <p className="text-sm text-slate-500">
-        Drag to reorder. First image plays first.
-      </p>
-
-      <DndContext collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-        <SortableContext
-          items={images.map(i => i.id)}
-          strategy={rectSortingStrategy}
-        >
-          <div className="mt-6 grid grid-cols-4 gap-6">
-            {images.map((img, index) => (
-              <SortableImage
-                key={img.id}
-                img={img}
-                index={index}
-                onRemove={onRemove}
-              />
-            ))}
-          </div>
-        </SortableContext>
-      </DndContext>
-    </>
-  );
-}
+/* ---------------- Sortable Image ---------------- */
 
 function SortableImage({
   img,
@@ -279,13 +250,10 @@ function SortableImage({
         ✕
       </button>
 
-      <div className="h-48 bg-black">
-        <img
-          src={img.url}
-          alt="Preview"
-          className="h-full w-full object-cover"
-        />
-      </div>
+      <img
+        src={img.url}
+        className="h-48 w-full object-cover"
+      />
 
       <div
         {...attributes}
@@ -295,74 +263,5 @@ function SortableImage({
         Drag to reorder
       </div>
     </div>
-  );
-}
-
-/* ---------------- Render Tab ---------------- */
-
-function RenderTab({
-  images,
-  state,
-  progress,
-}: {
-  images: ImageItem[];
-  state: RenderState;
-  progress: number;
-}) {
-  return (
-    <div className="max-w-xl">
-      <h1 className="text-xl font-semibold text-slate-800">
-        Live preview
-      </h1>
-      <p className="text-sm text-slate-500 mb-4">
-        Review before rendering
-      </p>
-
-      <div className="rounded-xl border bg-white p-6">
-        Preview slideshow ({images.length} images)
-      </div>
-
-      {state === "rendering" && (
-        <div className="mt-6">
-          <div className="h-2 bg-slate-200 rounded overflow-hidden">
-            <div
-              className="h-full bg-teal-500 transition-all"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-        </div>
-      )}
-
-      {state === "completed" && (
-        <p className="mt-6 text-teal-600 font-medium">
-          ✓ Video rendered successfully
-        </p>
-      )}
-    </div>
-  );
-}
-
-/* ---------------- UI ---------------- */
-
-function Tab({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`py-4 text-sm font-medium border-b-2 ${
-        active
-          ? "border-teal-500 text-teal-600"
-          : "border-transparent text-slate-500 hover:text-slate-700"
-      }`}
-    >
-      {label}
-    </button>
   );
 }
