@@ -8,18 +8,20 @@ const {
   createJob,
   updateJob,
   getJob,
+  listJobs,
 } = require("../../src/render/render.jobs");
 
 const router = express.Router();
 
 /**
- * Legacy endpoint (unchanged)
+ * Legacy endpoint (kept for compatibility)
+ * POST /api/render
  */
-router.post("/", async (req, res) => {
+router.post("/", async (_req, res) => {
   return res.json({
     success: true,
     message:
-      "Legacy render endpoint still exists. Use /render/job instead.",
+      "Legacy render endpoint still exists. Use /api/render/job instead.",
   });
 });
 
@@ -43,7 +45,7 @@ router.post("/job", async (req, res) => {
       });
     }
 
-    // Create job
+    // ✅ Create persistent job
     const job = createJob({
       images,
       profile,
@@ -65,6 +67,7 @@ router.post("/job", async (req, res) => {
           progress: 5,
         });
 
+        // Build minimal listing
         const listing = {
           images: images.map(img =>
             path.join(process.cwd(), img)
@@ -77,24 +80,23 @@ router.post("/job", async (req, res) => {
           },
         };
 
-        const outputDir = path.join(
-          process.cwd(),
-          "uploads",
-          "projects",
-          projectId,
-          "videos"
-        );
-
+        // Build render plan
         const renderPlan = buildRenderPlan({
           profile,
           preset,
-          outputDir,
+          outputDir: path.join(
+            process.cwd(),
+            "uploads",
+            "projects",
+            projectId,
+            "videos"
+          ),
         });
 
-        // Force job-based filename
+        // Override filename with jobId
         renderPlan.output.filename = `${job.jobId}.mp4`;
         renderPlan.output.path = path.join(
-          outputDir,
+          path.dirname(renderPlan.output.path),
           renderPlan.output.filename
         );
 
@@ -134,7 +136,7 @@ router.post("/job", async (req, res) => {
 });
 
 /**
- * Get render job status
+ * Get single render job
  * GET /api/render/job/:jobId
  */
 router.get("/job/:jobId", (req, res) => {
@@ -150,6 +152,21 @@ router.get("/job/:jobId", (req, res) => {
   return res.json({
     success: true,
     job,
+  });
+});
+
+/**
+ * List render jobs by project
+ * GET /api/render/jobs?projectId=demo
+ */
+router.get("/jobs", (req, res) => {
+  const { projectId = "demo" } = req.query;
+
+  const jobs = listJobs(projectId);
+
+  return res.json({
+    success: true,
+    jobs,
   });
 });
 

@@ -4,3 +4,9 @@ assets/
 *.wav
 *.mp3
 .env
+# Logs
+*.log
+data/render-jobs.sqlite
+# Runtime data
+uploads/
+data/
