@@ -4,12 +4,12 @@ const sharp = require("sharp");
 const ffmpeg = require("../services/ffmpeg.service");
 
 /**
- * Phase 11.3.A
- * Proper Parallax on top of Diagonal Dolly
+ * Phase 11.3.C
+ * Diagonal Dolly + Parallax + Forward Dolly + Micro Camera Rotation
  * Built on locked Phase 11.2.1 foundation
  */
 
-// Filmic velocity curve (LOCKED – unchanged)
+// Filmic velocity curve (LOCKED)
 function filmicCurve(t) {
   if (t < 0.15) {
     return (t / 0.15) * (t / 0.15) * 0.15;
@@ -19,6 +19,11 @@ function filmicCurve(t) {
     return 0.85 + (1 - Math.pow(1 - u, 2)) * 0.15;
   }
   return t;
+}
+
+// Degrees → radians
+function degToRad(d) {
+  return (d * Math.PI) / 180;
 }
 
 async function renderFrameBasedVideo({
@@ -37,7 +42,7 @@ async function renderFrameBasedVideo({
   const totalFrames = durationSeconds * fps;
 
   const outputDir = path.dirname(outputPath);
-  const frameDir = path.join(outputDir, "frames_parallax_dolly");
+  const frameDir = path.join(outputDir, "frames_parallax_dolly_rotate");
   fs.mkdirSync(frameDir, { recursive: true });
 
   const finalW = width;
@@ -47,10 +52,10 @@ async function renderFrameBasedVideo({
   const camH = finalH * oversample;
 
   /**
-   * Two fixed layers (CRITICAL)
+   * Depth layers (fixed)
    */
   const bgOverscan = 1.20;
-  const fgOverscan = 1.35; // foreground is "closer"
+  const fgOverscan = 1.35;
 
   const bgW = Math.round(camW * bgOverscan);
   const bgH = Math.round(camH * bgOverscan);
@@ -61,7 +66,6 @@ async function renderFrameBasedVideo({
   const bgPath = path.join(frameDir, "__bg.png");
   const fgPath = path.join(frameDir, "__fg.png");
 
-  // Resize ONCE per layer (NO per-frame resize)
   await sharp(imagePath)
     .resize(bgW, bgH, { fit: "cover", position: "centre" })
     .toFile(bgPath);
@@ -71,49 +75,77 @@ async function renderFrameBasedVideo({
     .toFile(fgPath);
 
   /**
-   * Diagonal dolly camera paths
-   * Foreground moves faster than background
+   * Diagonal dolly paths (unchanged)
    */
-
-  // Background (far)
   const bgStartX = Math.round((bgW - camW) * 0.20);
   const bgStartY = Math.round((bgH - camH) * 0.18);
   const bgEndX = Math.round((bgW - camW) * 0.45);
   const bgEndY = Math.round((bgH - camH) * 0.50);
 
-  // Foreground (near – stronger motion)
   const fgStartX = Math.round((fgW - camW) * 0.10);
   const fgStartY = Math.round((fgH - camH) * 0.08);
   const fgEndX = Math.round((fgW - camW) * 0.65);
   const fgEndY = Math.round((fgH - camH) * 0.70);
 
+  /**
+   * Forward dolly strengths (LOCKED)
+   */
+  const forwardStrengthBG = 0.03;
+  const forwardStrengthFG = 0.10;
+
+  /**
+   * Micro rotation (TOTAL over entire shot)
+   * Extremely subtle, single direction
+   */
+  const maxYaw = degToRad(0.25);   // left → right
+  const maxPitch = degToRad(0.15); // down → up
+
   for (let i = 0; i < totalFrames; i++) {
     const t = i / (totalFrames - 1);
     const v = filmicCurve(t);
+    const f = v * v;
+
+    // Rotation angles (smooth, monotonic)
+    const yaw = maxYaw * v;
+    const pitch = maxPitch * v;
 
     // Background crop
-    const bgX = Math.round(bgStartX + (bgEndX - bgStartX) * v);
-    const bgY = Math.round(bgStartY + (bgEndY - bgStartY) * v);
+    const bgX =
+      Math.round(bgStartX + (bgEndX - bgStartX) * v) +
+      Math.round((bgW - camW) * forwardStrengthBG * f);
+    const bgY =
+      Math.round(bgStartY + (bgEndY - bgStartY) * v) +
+      Math.round((bgH - camH) * forwardStrengthBG * f);
 
-    const bgFrame = await sharp(bgPath)
+    let bgFrame = await sharp(bgPath)
       .extract({
         left: bgX,
         top: bgY,
         width: camW,
         height: camH,
       })
+      .rotate((yaw + pitch) * (180 / Math.PI), {
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
       .toBuffer();
 
-    // Foreground crop (faster)
-    const fgX = Math.round(fgStartX + (fgEndX - fgStartX) * v);
-    const fgY = Math.round(fgStartY + (fgEndY - fgStartY) * v);
+    // Foreground crop (stronger motion)
+    const fgX =
+      Math.round(fgStartX + (fgEndX - fgStartX) * v) +
+      Math.round((fgW - camW) * forwardStrengthFG * f);
+    const fgY =
+      Math.round(fgStartY + (fgEndY - fgStartY) * v) +
+      Math.round((fgH - camH) * forwardStrengthFG * f);
 
-    const fgFrame = await sharp(fgPath)
+    let fgFrame = await sharp(fgPath)
       .extract({
         left: fgX,
         top: fgY,
         width: camW,
         height: camH,
+      })
+      .rotate((yaw + pitch) * (180 / Math.PI), {
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
       })
       .toBuffer();
 
@@ -122,13 +154,12 @@ async function renderFrameBasedVideo({
       `frame_${String(i).padStart(5, "0")}.png`
     );
 
-    // Composite (foreground over background)
     await sharp(bgFrame)
       .composite([{ input: fgFrame }])
       .toFile(framePath);
   }
 
-  // Encode (unchanged, safe)
+  // Encode (unchanged)
   return new Promise((resolve, reject) => {
     ffmpeg()
       .input(path.join(frameDir, "frame_%05d.png"))

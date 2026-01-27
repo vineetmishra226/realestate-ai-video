@@ -21,8 +21,10 @@ const {
       "projects",
       "demo",
       "videos",
-      "diagonal_dolly_parallax.mp4"
+      "diagonal_dolly_parallax_forward_rotate.mp4"
     );
+
+    console.log("▶ Starting cinematic render…");
 
     await renderFrameBasedVideo({
       imagePath: inputImage,
@@ -31,10 +33,13 @@ const {
       height: 720,
       durationSeconds: 8,
       fps: 30,
+      oversample: 2,
     });
 
-    console.log("✅ Diagonal dolly with parallax created");
+    console.log("✅ Render complete");
+    console.log("🎬 Output:", outputVideo);
   } catch (err) {
-    console.error("❌ Render failed:", err);
+    console.error("❌ Render failed");
+    console.error(err);
   }
 })();
