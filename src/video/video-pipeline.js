@@ -1,79 +1,117 @@
+const fs = require("fs");
 const path = require("path");
+const ffmpeg = require("../services/ffmpeg.service");
 
-// Profiles
-const landscape = require("./profiles/landscape");
-const square = require("./profiles/square");
-const vertical = require("./profiles/vertical");
+module.exports = async function renderVideo(
+  listing,
+  renderPlan,
+  onProgress
+) {
+  const images = listing.images;
 
-// Presets
-const fast = require("./presets/fast");
-const high = require("./presets/high-quality");
-
-/**
- * Registry
- */
-const PROFILES = {
-  landscape,
-  square,
-  vertical
-};
-
-const PRESETS = {
-  fast,
-  high
-};
-
-/**
- * Build a render plan
- * This function does NOT render anything
- */
-function buildRenderPlan(options = {}) {
-  const profileName = options.profile || "landscape";
-  const presetName = options.preset || "high";
-
-  const profile = PROFILES[profileName];
-  if (!profile) {
-    throw new Error(`Unknown video profile: ${profileName}`);
+  if (!images || images.length === 0) {
+    throw new Error("No images provided for render");
   }
 
-  const preset = PRESETS[presetName];
-  if (!preset) {
-    throw new Error(`Unknown quality preset: ${presetName}`);
-  }
+  const rawOutputPath = renderPlan.output.path;
+  const outputPath = rawOutputPath.replace(/\\/g, "/");
 
-  const outputDir = options.outputDir || process.cwd();
-  const outputFileName = `${profile.name}-${preset.name}.mp4`;
+  const width = renderPlan.video.width;
+  const height = renderPlan.video.height;
+  const fps = renderPlan.video.fps;
 
-  return {
-    profile,
-    preset,
+  const imageDuration = 3; // seconds
+  const totalFrames = imageDuration * fps;
 
-    output: {
-      path: path.join(outputDir, outputFileName),
-      filename: outputFileName
-    },
+  const startZoom = 1.0;
+  const endZoom = 1.08; // subtle cinematic zoom
 
-    video: {
-      width: profile.resolution.width,
-      height: profile.resolution.height,
-      fps: profile.fps,
+  // Ensure output directory exists
+  const outputDir = path.dirname(rawOutputPath);
+  fs.mkdirSync(outputDir, { recursive: true });
 
-      codec: preset.video.codec,
-      crf: preset.video.crf,
-      preset: preset.video.preset,
-      profile: preset.video.profile,
-      level: preset.video.level
-    },
+  // Build concat file
+  const concatFilePath = path.join(outputDir, "images.txt");
+  const concatFile = concatFilePath.replace(/\\/g, "/");
 
-    audio: {
-      codec: preset.audio.codec,
-      bitrate: preset.audio.bitrate
-    }
-  };
-}
+  const concatContent = images
+    .map(img => {
+      const normalized = img.replace(/\\/g, "/");
+      return `file '${normalized}'\nduration ${imageDuration}`;
+    })
+    .join("\n");
 
-module.exports = {
-  buildRenderPlan,
-  PROFILES,
-  PRESETS
+  fs.writeFileSync(concatFilePath, concatContent);
+
+  /**
+   * Smooth Ken Burns zoom formula
+   * zoom = start + (end - start) * (on / totalFrames)
+   */
+  const zoomExpression = `${startZoom} + (${endZoom}-${startZoom})*(on/${totalFrames})`;
+
+  return new Promise((resolve, reject) => {
+    ffmpeg()
+      .input(concatFile)
+      .inputOptions([
+        "-f concat",
+        "-safe 0",
+      ])
+      .videoFilters([
+        // 1. Scale & pad (even dimensions, no distortion)
+        {
+          filter: "scale",
+          options: {
+            w: width,
+            h: height,
+            force_original_aspect_ratio: "decrease",
+          },
+        },
+        {
+          filter: "pad",
+          options: {
+            w: width,
+            h: height,
+            x: "(ow-iw)/2",
+            y: "(oh-ih)/2",
+          },
+        },
+
+        // 2. Smooth Ken Burns zoom (NO jitter)
+        {
+          filter: "zoompan",
+          options: {
+            z: zoomExpression,
+            x: "iw/2-(iw/zoom/2)",
+            y: "ih/2-(ih/zoom/2)",
+            d: totalFrames,
+            s: `${width}x${height}`,
+          },
+        },
+      ])
+      .outputOptions([
+        "-c:v libx264",
+        "-pix_fmt yuv420p",
+        `-r ${fps}`,
+        "-movflags +faststart",
+        "-y",
+      ])
+      .output(outputPath)
+      .on("start", cmd => {
+        console.log("FFmpeg command:\n", cmd);
+      })
+      .on("progress", p => {
+        if (p.percent && onProgress) {
+          onProgress(Math.min(99, Math.floor(p.percent)));
+        }
+      })
+      .on("error", err => {
+        console.error("FFmpeg error:", err.message);
+        reject(err);
+      })
+      .on("end", () => {
+        if (onProgress) onProgress(100);
+        resolve(outputPath);
+      })
+      .run();
+  });
 };

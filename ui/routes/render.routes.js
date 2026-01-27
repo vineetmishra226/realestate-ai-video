@@ -1,8 +1,8 @@
 const express = require("express");
 const path = require("path");
 
-const renderVideo = require("../../src/pipelines/video.pipeline");
-const { buildRenderPlan } = require("../../src/video/video-pipeline");
+const renderVideo = require("../../src/video/video-pipeline");
+const { buildRenderPlan } = require("../../src/video/render-plan");
 
 const {
   createJob,
@@ -14,20 +14,17 @@ const {
 const router = express.Router();
 
 /**
- * Legacy endpoint (kept for compatibility)
- * POST /api/render
+ * Legacy endpoint
  */
-router.post("/", async (_req, res) => {
-  return res.json({
+router.post("/", (_req, res) => {
+  res.json({
     success: true,
-    message:
-      "Legacy render endpoint still exists. Use /api/render/job instead.",
+    message: "Use /api/render/job instead",
   });
 });
 
 /**
- * Create and run render job
- * POST /api/render/job
+ * Create render job
  */
 router.post("/job", async (req, res) => {
   try {
@@ -45,7 +42,6 @@ router.post("/job", async (req, res) => {
       });
     }
 
-    // ✅ Create persistent job
     const job = createJob({
       images,
       profile,
@@ -53,13 +49,11 @@ router.post("/job", async (req, res) => {
       projectId,
     });
 
-    // Respond immediately
     res.json({
       success: true,
       jobId: job.jobId,
     });
 
-    // Run render async
     setImmediate(async () => {
       try {
         updateJob(job.jobId, {
@@ -67,36 +61,32 @@ router.post("/job", async (req, res) => {
           progress: 5,
         });
 
-        // Build minimal listing
         const listing = {
           images: images.map(img =>
             path.join(process.cwd(), img)
           ),
           isValid() {
-            return (
-              Array.isArray(this.images) &&
-              this.images.length > 0
-            );
+            return this.images.length > 0;
           },
         };
 
-        // Build render plan
+        const outputDir = path.join(
+          process.cwd(),
+          "uploads",
+          "projects",
+          projectId,
+          "videos"
+        );
+
         const renderPlan = buildRenderPlan({
           profile,
           preset,
-          outputDir: path.join(
-            process.cwd(),
-            "uploads",
-            "projects",
-            projectId,
-            "videos"
-          ),
+          outputDir,
         });
 
-        // Override filename with jobId
         renderPlan.output.filename = `${job.jobId}.mp4`;
         renderPlan.output.path = path.join(
-          path.dirname(renderPlan.output.path),
+          outputDir,
           renderPlan.output.filename
         );
 
@@ -104,9 +94,7 @@ router.post("/job", async (req, res) => {
           listing,
           renderPlan,
           percent => {
-            updateJob(job.jobId, {
-              progress: percent,
-            });
+            updateJob(job.jobId, { progress: percent });
           }
         );
 
@@ -128,7 +116,7 @@ router.post("/job", async (req, res) => {
     });
   } catch (err) {
     console.error("Render job error:", err);
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
       error: "Failed to create render job",
     });
@@ -136,37 +124,27 @@ router.post("/job", async (req, res) => {
 });
 
 /**
- * Get single render job
- * GET /api/render/job/:jobId
+ * Get job
  */
 router.get("/job/:jobId", (req, res) => {
   const job = getJob(req.params.jobId);
-
   if (!job) {
     return res.status(404).json({
       success: false,
       error: "Job not found",
     });
   }
-
-  return res.json({
-    success: true,
-    job,
-  });
+  res.json({ success: true, job });
 });
 
 /**
- * List render jobs by project
- * GET /api/render/jobs?projectId=demo
+ * List jobs
  */
 router.get("/jobs", (req, res) => {
   const { projectId = "demo" } = req.query;
-
-  const jobs = listJobs(projectId);
-
-  return res.json({
+  res.json({
     success: true,
-    jobs,
+    jobs: listJobs(projectId),
   });
 });
 

@@ -1,105 +1,93 @@
-const ffmpeg = require("../services/ffmpeg.service");
-const videoConfig = require("../config/video.config");
-const paths = require("../config/paths.config");
 const fs = require("fs");
 const path = require("path");
+const ffmpeg = require("../services/ffmpeg.service");
 
-/**
- * Render video with progress callback
- */
 module.exports = async function renderVideo(
   listing,
   renderPlan,
   onProgress
 ) {
-  if (!listing.isValid()) {
-    throw new Error("Invalid listing data");
-  }
-
   const images = listing.images;
 
-  // ✅ CORRECT output directory handling
-  const outputDir = path.dirname(renderPlan.output.path);
-
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
+  if (!images || images.length === 0) {
+    throw new Error("No images provided for render");
   }
 
-  const outputPath = renderPlan.output.path;
+  const rawOutputPath = renderPlan.output.path;
+  const outputPath = rawOutputPath.replace(/\\/g, "/");
+
+  const width = renderPlan.video.width;   // e.g. 1280
+  const height = renderPlan.video.height; // e.g. 720
+  const fps = renderPlan.video.fps;
+  const imageDuration = 3;
+
+  // Ensure output directory exists
+  const outputDir = path.dirname(rawOutputPath);
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  // Build concat file
+  const concatFilePath = path.join(outputDir, "images.txt");
+  const concatFile = concatFilePath.replace(/\\/g, "/");
+
+  const concatContent = images
+    .map(img => {
+      const normalized = img.replace(/\\/g, "/");
+      return `file '${normalized}'\nduration ${imageDuration}`;
+    })
+    .join("\n");
+
+  fs.writeFileSync(concatFilePath, concatContent);
 
   return new Promise((resolve, reject) => {
-    let command = ffmpeg();
-
-    // Image inputs
-    images.forEach(img => {
-      command = command.input(img).inputOptions([
-        "-loop 1",
-        `-t ${videoConfig.timing.imageDurationSeconds}`,
-      ]);
-    });
-
-    // Add audio ONLY if it exists
-    let hasAudio = false;
-    if (
-      paths.assets &&
-      paths.assets.audio &&
-      fs.existsSync(paths.assets.audio)
-    ) {
-      command = command.input(paths.assets.audio);
-      hasAudio = true;
-    }
-
-    const videoFilters = images
-      .map(
-        (_, i) =>
-          `[${i}:v]scale=${renderPlan.video.width}:${renderPlan.video.height}:force_original_aspect_ratio=decrease,` +
-          `pad=${renderPlan.video.width}:${renderPlan.video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}]`
-      )
-      .join(";");
-
-    const concatFilter =
-      images.map((_, i) => `[v${i}]`).join("") +
-      `concat=n=${images.length}:v=1:a=0[outv]`;
-
-    const filters = [`${videoFilters};${concatFilter}`];
-
-    if (hasAudio) {
-      filters.push({
-        filter: "aresample",
-        options: "async=1:first_pts=0",
-        inputs: `${images.length}:a`,
-        outputs: "outa",
-      });
-    }
-
-    command
-      .complexFilter(filters)
+    ffmpeg()
+      .input(concatFile)
+      .inputOptions([
+        "-f concat",
+        "-safe 0",
+      ])
+      .videoFilters([
+        {
+          filter: "scale",
+          options: {
+            w: width,
+            h: height,
+            force_original_aspect_ratio: "decrease",
+          },
+        },
+        {
+          filter: "pad",
+          options: {
+            w: width,
+            h: height,
+            x: "(ow-iw)/2",
+            y: "(oh-ih)/2",
+          },
+        },
+      ])
       .outputOptions([
-        "-map [outv]",
-        ...(hasAudio ? ["-map [outa]"] : []),
-        `-c:v ${renderPlan.video.codec}`,
-        `-profile:v ${renderPlan.video.profile}`,
-        `-level ${renderPlan.video.level}`,
-        `-r ${renderPlan.video.fps}`,
-        ...(hasAudio
-          ? [`-c:a ${renderPlan.audio.codec}`]
-          : []),
+        "-c:v libx264",
+        "-pix_fmt yuv420p",
+        `-r ${fps}`,
         "-movflags +faststart",
-        "-shortest",
         "-y",
       ])
-      .save(outputPath)
-      .on("progress", progress => {
-        if (onProgress && progress.percent) {
-          onProgress(Math.min(99, Math.floor(progress.percent)));
+      .output(outputPath)
+      .on("start", cmd => {
+        console.log("FFmpeg command:\n", cmd);
+      })
+      .on("progress", p => {
+        if (p.percent && onProgress) {
+          onProgress(Math.min(99, Math.floor(p.percent)));
         }
+      })
+      .on("error", err => {
+        console.error("FFmpeg error:", err.message);
+        reject(err);
       })
       .on("end", () => {
         if (onProgress) onProgress(100);
         resolve(outputPath);
       })
-      .on("error", err => {
-        reject(err);
-      });
+      .run();
   });
 };
