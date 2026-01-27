@@ -21,7 +21,7 @@ const {
       "projects",
       "demo",
       "videos",
-      "frame_based_filmic.mp4"
+      "diagonal_dolly_parallax.mp4"
     );
 
     await renderFrameBasedVideo({
@@ -29,11 +29,11 @@ const {
       outputPath: outputVideo,
       width: 1280,
       height: 720,
-      durationSeconds: 7,
+      durationSeconds: 8,
       fps: 30,
     });
 
-    console.log("✅ Filmic motion rendered");
+    console.log("✅ Diagonal dolly with parallax created");
   } catch (err) {
     console.error("❌ Render failed:", err);
   }
