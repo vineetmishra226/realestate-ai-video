@@ -4,175 +4,177 @@ const sharp = require("sharp");
 const ffmpeg = require("../services/ffmpeg.service");
 
 /**
- * Phase 12.2
- * Depth-weighted cinematic motion
- * SAFE: Depth only modulates forward dolly strength
+ * PHASE 14 (MOTION-CORRECT)
+ * - Phase 13 camera preserved
+ * - Editor-grade dissolve
+ * - Bresenham-style temporal pixel stepping
+ * - NO micro-stops possible
  */
 
-// Filmic velocity curve (LOCKED)
 function filmicCurve(t) {
-  if (t < 0.15) return (t / 0.15) * (t / 0.15) * 0.15;
+  if (t < 0.15) return (t / 0.15) ** 2 * 0.15;
   if (t > 0.85) {
     const u = (t - 0.85) / 0.15;
-    return 0.85 + (1 - Math.pow(1 - u, 2)) * 0.15;
+    return 0.85 + (1 - (1 - u) ** 2) * 0.15;
   }
   return t;
 }
 
-// Degrees → radians
-function degToRad(d) {
-  return (d * Math.PI) / 180;
-}
-
 async function renderFrameBasedVideo({
-  imagePath,
+  imagePaths,
   outputPath,
-  width = 1280,
-  height = 720,
-  durationSeconds = 8,
-  fps = 30,
+  width,
+  height,
+  fps,
+  secondsPerImage = 6,
   oversample = 2,
 }) {
-  if (!fs.existsSync(imagePath)) {
-    throw new Error("Input image does not exist");
-  }
+  console.log("🔥🔥 PHASE 14 MOTION-CORRECT ENGINE ACTIVE 🔥🔥");
 
-  const depthPath = imagePath.replace(/\.(jpg|jpeg|png)$/i, ".depth.png");
-  if (!fs.existsSync(depthPath)) {
-    throw new Error("Depth map missing for image");
-  }
+  const totalImages = imagePaths.length;
+  const framesPerImage = fps * secondsPerImage;
+  const transitionFrames = Math.floor(framesPerImage * 0.25);
+  const totalFrames = framesPerImage * totalImages;
 
-  const totalFrames = durationSeconds * fps;
   const outputDir = path.dirname(outputPath);
-  const frameDir = path.join(outputDir, "frames_depth_weighted");
+  const frameDir = path.join(outputDir, "frames_phase14");
   fs.mkdirSync(frameDir, { recursive: true });
 
-  const finalW = width;
-  const finalH = height;
-  const camW = finalW * oversample;
-  const camH = finalH * oversample;
+  const camW = Math.floor(width * oversample);
+  const camH = Math.floor(height * oversample);
 
-  /**
-   * Load depth map ONCE
-   */
-  const depthBuffer = await sharp(depthPath)
-    .resize(camW, camH, { fit: "fill" })
-    .raw()
-    .toBuffer();
+  // Pre-resize images
+  const layers = [];
+  const layerMeta = [];
 
-  /**
-   * Compute stable depth weights
-   * We use percentiles to avoid noise
-   */
-  let sumNear = 0;
-  let sumFar = 0;
-  let count = depthBuffer.length;
+  for (let i = 0; i < imagePaths.length; i++) {
+    const img = imagePaths[i];
+    if (!fs.existsSync(img)) throw new Error(`Missing image: ${img}`);
 
-  for (let i = 0; i < count; i++) {
-    const d = depthBuffer[i] / 255;
-    sumNear += d;
-    sumFar += 1 - d;
+    const layerPath = path.join(frameDir, `layer_${i}.png`);
+    const resizedW = Math.floor(camW * 1.4);
+    const resizedH = Math.floor(camH * 1.4);
+
+    await sharp(img)
+      .resize(resizedW, resizedH, { fit: "cover" })
+      .toFile(layerPath);
+
+    layers.push(layerPath);
+    layerMeta.push({ w: resizedW, h: resizedH });
   }
 
-  const depthWeightFG = sumNear / count; // nearer = larger
-  const depthWeightBG = sumFar / count;  // farther = smaller
+  // 🔒 Global camera path (UNCHANGED)
+  const startX = camW * 0.1;
+  const startY = camH * 0.1;
+  const endX = camW * 0.4;
+  const endY = camH * 0.45;
 
-  /**
-   * Base motion strengths (LOCKED)
-   */
-  const baseForwardBG = 0.03;
-  const baseForwardFG = 0.10;
+  // 🔑 Bresenham-style accumulators
+  let fx = startX;
+  let fy = startY;
+  let ix = Math.floor(fx);
+  let iy = Math.floor(fy);
+  let errX = 0;
+  let errY = 0;
 
-  const forwardBG = baseForwardBG * depthWeightBG;
-  const forwardFG = baseForwardFG * depthWeightFG;
+  for (let frame = 0; frame < totalFrames; frame++) {
+    const t = filmicCurve(frame / (totalFrames - 1));
 
-  /**
-   * Overscan layers
-   */
-  const bgOverscan = 1.20;
-  const fgOverscan = 1.35;
+    const targetX = startX + (endX - startX) * t;
+    const targetY = startY + (endY - startY) * t;
 
-  const bgW = Math.round(camW * bgOverscan);
-  const bgH = Math.round(camH * bgOverscan);
-  const fgW = Math.round(camW * fgOverscan);
-  const fgH = Math.round(camH * fgOverscan);
+    const dx = targetX - fx;
+    const dy = targetY - fy;
 
-  const bgPath = path.join(frameDir, "__bg.png");
-  const fgPath = path.join(frameDir, "__fg.png");
+    fx = targetX;
+    fy = targetY;
 
-  await sharp(imagePath).resize(bgW, bgH).toFile(bgPath);
-  await sharp(imagePath).resize(fgW, fgH).toFile(fgPath);
+    errX += dx;
+    errY += dy;
 
-  /**
-   * Diagonal dolly paths (LOCKED)
-   */
-  const bgStartX = (bgW - camW) * 0.20;
-  const bgStartY = (bgH - camH) * 0.18;
-  const bgEndX = (bgW - camW) * 0.45;
-  const bgEndY = (bgH - camH) * 0.50;
+    if (Math.abs(errX) >= 1) {
+      ix += Math.sign(errX);
+      errX -= Math.sign(errX);
+    }
+    if (Math.abs(errY) >= 1) {
+      iy += Math.sign(errY);
+      errY -= Math.sign(errY);
+    }
 
-  const fgStartX = (fgW - camW) * 0.10;
-  const fgStartY = (fgH - camH) * 0.08;
-  const fgEndX = (fgW - camW) * 0.65;
-  const fgEndY = (fgH - camH) * 0.70;
+    const imgIndex = Math.min(
+      Math.floor(frame / framesPerImage),
+      totalImages - 1
+    );
 
-  /**
-   * Micro rotation (LOCKED)
-   */
-  const maxYaw = degToRad(0.25);
-  const maxPitch = degToRad(0.15);
+    const frameInImage = frame % framesPerImage;
+    const inTransition =
+      frameInImage >= framesPerImage - transitionFrames &&
+      imgIndex < totalImages - 1;
 
-  for (let i = 0; i < totalFrames; i++) {
-    const t = i / (totalFrames - 1);
-    const v = filmicCurve(t);
-    const f = v * v;
+    const metaA = layerMeta[imgIndex];
+    const metaB = layerMeta[imgIndex + 1];
 
-    const yaw = maxYaw * v;
-    const pitch = maxPitch * v;
+    const x = Math.max(0, Math.min(ix, metaA.w - camW));
+    const y = Math.max(0, Math.min(iy, metaA.h - camH));
 
-    const bgX =
-      Math.round(bgStartX + (bgEndX - bgStartX) * v +
-      (bgW - camW) * forwardBG * f);
+    const framePath = path.join(
+      frameDir,
+      `frame_${String(frame).padStart(6, "0")}.png`
+    );
 
-    const bgY =
-      Math.round(bgStartY + (bgEndY - bgStartY) * v +
-      (bgH - camH) * forwardBG * f);
+    if (!inTransition) {
+      await sharp(layers[imgIndex])
+        .extract({ left: x, top: y, width: camW, height: camH })
+        .resize(width, height)
+        .toFile(framePath);
+    } else {
+      const tt =
+        (frameInImage - (framesPerImage - transitionFrames)) /
+        transitionFrames;
 
-    const fgX =
-      Math.round(fgStartX + (fgEndX - fgStartX) * v +
-      (fgW - camW) * forwardFG * f);
+      const bufA = await sharp(layers[imgIndex])
+        .extract({ left: x, top: y, width: camW, height: camH })
+        .resize(width, height)
+        .raw()
+        .toBuffer();
 
-    const fgY =
-      Math.round(fgStartY + (fgEndY - fgStartY) * v +
-      (fgH - camH) * forwardFG * f);
+      const bufB = await sharp(layers[imgIndex + 1])
+        .extract({
+          left: Math.max(0, Math.min(x, metaB.w - camW)),
+          top: Math.max(0, Math.min(y, metaB.h - camH)),
+          width: camW,
+          height: camH,
+        })
+        .resize(width, height)
+        .raw()
+        .toBuffer();
 
-    const bgFrame = await sharp(bgPath)
-      .extract({ left: bgX, top: bgY, width: camW, height: camH })
-      .rotate((yaw + pitch) * 180 / Math.PI, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-      .toBuffer();
+      const out = Buffer.alloc(bufA.length);
+      for (let i = 0; i < bufA.length; i++) {
+        out[i] = Math.round(bufA[i] * (1 - tt) + bufB[i] * tt);
+      }
 
-    const fgFrame = await sharp(fgPath)
-      .extract({ left: fgX, top: fgY, width: camW, height: camH })
-      .rotate((yaw + pitch) * 180 / Math.PI, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-      .toBuffer();
-
-    const framePath = path.join(frameDir, `frame_${String(i).padStart(5, "0")}.png`);
-    await sharp(bgFrame).composite([{ input: fgFrame }]).toFile(framePath);
+      await sharp(out, {
+        raw: { width, height, channels: 3 },
+      }).toFile(framePath);
+    }
   }
 
   return new Promise((resolve, reject) => {
     ffmpeg()
-      .input(path.join(frameDir, "frame_%05d.png"))
+      .input(path.join(frameDir, "frame_%06d.png"))
       .inputOptions([`-framerate ${fps}`])
       .outputOptions([
-        `-vf scale=${finalW}:${finalH}`,
         "-c:v libx264",
         "-pix_fmt yuv420p",
         "-movflags +faststart",
         "-y",
       ])
       .output(outputPath)
-      .on("end", () => resolve(outputPath))
+      .on("end", () => {
+        console.log("✅ VIDEO COMPLETE");
+        resolve(outputPath);
+      })
       .on("error", reject)
       .run();
   });

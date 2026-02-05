@@ -1,93 +1,29 @@
-const fs = require("fs");
 const path = require("path");
-const ffmpeg = require("../services/ffmpeg.service");
+const fs = require("fs");
+const { renderFrameBasedVideo } = require("../frame-engine/render-frame-video");
 
-module.exports = async function renderVideo(
-  listing,
-  renderPlan,
-  onProgress
-) {
-  const images = listing.images;
+module.exports = async function renderVideo(listing, renderPlan, onProgress) {
+  console.log("🔥🔥 PHASE 13 PIPELINE ACTIVE 🔥🔥");
 
-  if (!images || images.length === 0) {
-    throw new Error("No images provided for render");
+  const images = listing.images.map(p => path.join(process.cwd(), p));
+  if (images.length < 2) {
+    throw new Error("Phase 13 requires at least 2 images");
   }
 
-  const rawOutputPath = renderPlan.output.path;
-  const outputPath = rawOutputPath.replace(/\\/g, "/");
+  const outputPath = renderPlan.output.path;
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-  const width = renderPlan.video.width;   // e.g. 1280
-  const height = renderPlan.video.height; // e.g. 720
-  const fps = renderPlan.video.fps;
-  const imageDuration = 3;
+  onProgress?.(10);
 
-  // Ensure output directory exists
-  const outputDir = path.dirname(rawOutputPath);
-  fs.mkdirSync(outputDir, { recursive: true });
-
-  // Build concat file
-  const concatFilePath = path.join(outputDir, "images.txt");
-  const concatFile = concatFilePath.replace(/\\/g, "/");
-
-  const concatContent = images
-    .map(img => {
-      const normalized = img.replace(/\\/g, "/");
-      return `file '${normalized}'\nduration ${imageDuration}`;
-    })
-    .join("\n");
-
-  fs.writeFileSync(concatFilePath, concatContent);
-
-  return new Promise((resolve, reject) => {
-    ffmpeg()
-      .input(concatFile)
-      .inputOptions([
-        "-f concat",
-        "-safe 0",
-      ])
-      .videoFilters([
-        {
-          filter: "scale",
-          options: {
-            w: width,
-            h: height,
-            force_original_aspect_ratio: "decrease",
-          },
-        },
-        {
-          filter: "pad",
-          options: {
-            w: width,
-            h: height,
-            x: "(ow-iw)/2",
-            y: "(oh-ih)/2",
-          },
-        },
-      ])
-      .outputOptions([
-        "-c:v libx264",
-        "-pix_fmt yuv420p",
-        `-r ${fps}`,
-        "-movflags +faststart",
-        "-y",
-      ])
-      .output(outputPath)
-      .on("start", cmd => {
-        console.log("FFmpeg command:\n", cmd);
-      })
-      .on("progress", p => {
-        if (p.percent && onProgress) {
-          onProgress(Math.min(99, Math.floor(p.percent)));
-        }
-      })
-      .on("error", err => {
-        console.error("FFmpeg error:", err.message);
-        reject(err);
-      })
-      .on("end", () => {
-        if (onProgress) onProgress(100);
-        resolve(outputPath);
-      })
-      .run();
+  const result = await renderFrameBasedVideo({
+    imagePaths: images,
+    outputPath,
+    width: renderPlan.video.width,
+    height: renderPlan.video.height,
+    fps: renderPlan.video.fps,
+    secondsPerImage: 6,
   });
+
+  onProgress?.(100);
+  return result;
 };
