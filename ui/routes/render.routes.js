@@ -1,9 +1,9 @@
 const express = require("express");
 const path = require("path");
+const fs = require("fs");
 
-const renderVideo = require("../../src/video/video-pipeline");
 const { buildRenderPlan } = require("../../src/video/render-plan");
-
+const { renderFrameBasedVideo } = require("../../src/frame-engine/render-frame-video");
 const {
   createJob,
   updateJob,
@@ -13,19 +13,6 @@ const {
 
 const router = express.Router();
 
-/**
- * Legacy endpoint
- */
-router.post("/", (_req, res) => {
-  res.json({
-    success: true,
-    message: "Use /api/render/job instead",
-  });
-});
-
-/**
- * Create render job
- */
 router.post("/job", async (req, res) => {
   try {
     const {
@@ -36,39 +23,17 @@ router.post("/job", async (req, res) => {
     } = req.body;
 
     if (!Array.isArray(images) || images.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "No images provided",
-      });
+      return res.status(400).json({ success: false, error: "No images provided" });
     }
 
-    const job = createJob({
-      images,
-      profile,
-      preset,
-      projectId,
-    });
+    const job = createJob({ images, profile, preset, projectId });
+    res.json({ success: true, jobId: job.jobId });
 
-    res.json({
-      success: true,
-      jobId: job.jobId,
-    });
+    console.log("🚀 RENDER ROUTE HIT", images);
 
     setImmediate(async () => {
       try {
-        updateJob(job.jobId, {
-          status: "rendering",
-          progress: 5,
-        });
-
-        const listing = {
-          images: images.map(img =>
-            path.join(process.cwd(), img)
-          ),
-          isValid() {
-            return this.images.length > 0;
-          },
-        };
+        updateJob(job.jobId, { status: "rendering", progress: 5 });
 
         const outputDir = path.join(
           process.cwd(),
@@ -77,75 +42,52 @@ router.post("/job", async (req, res) => {
           projectId,
           "videos"
         );
+        fs.mkdirSync(outputDir, { recursive: true });
 
-        const renderPlan = buildRenderPlan({
-          profile,
-          preset,
+        const renderPlan = buildRenderPlan({ profile, preset, outputDir });
+
+        const finalOutputPath = path.join(
           outputDir,
+          `${job.jobId}.mp4`
+        ).replace(/\\/g, "/");
+
+        console.log(`🎥 Starting PHASE 13 continuous render`);
+
+        await renderFrameBasedVideo({
+          imagePaths: images.map(img => path.join(process.cwd(), img)),
+          outputPath: finalOutputPath,
+          width: Math.floor(renderPlan.video.width),
+          height: Math.floor(renderPlan.video.height),
+          fps: renderPlan.video.fps,
+          secondsPerImage: 6,
+          oversample: 2,
         });
-
-        renderPlan.output.filename = `${job.jobId}.mp4`;
-        renderPlan.output.path = path.join(
-          outputDir,
-          renderPlan.output.filename
-        );
-
-        const outputPath = await renderVideo(
-          listing,
-          renderPlan,
-          percent => {
-            updateJob(job.jobId, { progress: percent });
-          }
-        );
 
         updateJob(job.jobId, {
           status: "completed",
           progress: 100,
-          outputVideo: `/uploads/projects/${projectId}/videos/${path.basename(
-            outputPath
-          )}`,
+          outputVideo: `/uploads/projects/${projectId}/videos/${path.basename(finalOutputPath)}`,
         });
       } catch (err) {
-        console.error("Render failed:", err);
-
-        updateJob(job.jobId, {
-          status: "failed",
-          error: err.message,
-        });
+        console.error("❌ Render failed:", err);
+        updateJob(job.jobId, { status: "failed", error: err.message });
       }
     });
   } catch (err) {
-    console.error("Render job error:", err);
-    res.status(500).json({
-      success: false,
-      error: "Failed to create render job",
-    });
+    console.error("Render route error:", err);
+    res.status(500).json({ success: false });
   }
 });
 
-/**
- * Get job
- */
 router.get("/job/:jobId", (req, res) => {
   const job = getJob(req.params.jobId);
-  if (!job) {
-    return res.status(404).json({
-      success: false,
-      error: "Job not found",
-    });
-  }
+  if (!job) return res.status(404).json({ success: false });
   res.json({ success: true, job });
 });
 
-/**
- * List jobs
- */
 router.get("/jobs", (req, res) => {
   const { projectId = "demo" } = req.query;
-  res.json({
-    success: true,
-    jobs: listJobs(projectId),
-  });
+  res.json({ success: true, jobs: listJobs(projectId) });
 });
 
 module.exports = router;
