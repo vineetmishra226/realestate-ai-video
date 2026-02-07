@@ -4,10 +4,10 @@ const sharp = require("sharp");
 const ffmpeg = require("../services/ffmpeg.service");
 
 /**
- * PHASE 15A
- * - Phase 14 motion & blending LOCKED
- * - Context-aware transition timing
- * - NO camera changes
+ * PHASE 15B
+ * - Phase 14 motion LOCKED
+ * - Phase 15A logic preserved
+ * - Transition timing configurable via presets
  */
 
 function filmicCurve(t) {
@@ -20,24 +20,45 @@ function filmicCurve(t) {
 }
 
 /**
- * Phase 15A: transition timing rules
+ * 🔧 Phase 15B: Transition presets
  */
-function getTransitionProfile(index, totalImages, framesPerImage) {
-  // defaults
-  let duration = Math.floor(framesPerImage * 0.25);
-  let startOffset = framesPerImage - duration;
+const TRANSITION_PRESETS = {
+  cinematic: {
+    first: 0.35,
+    middle: 0.25,
+    last: 0,
+  },
+  standard: {
+    first: 0.30,
+    middle: 0.20,
+    last: 0,
+  },
+  fast: {
+    first: 0.20,
+    middle: 0.15,
+    last: 0,
+  },
+};
 
-  // first transition (establishing)
-  if (index === 0) {
-    duration = Math.floor(framesPerImage * 0.35);
-    startOffset = framesPerImage - duration;
-  }
+/**
+ * Phase 15B: Resolve transition profile
+ */
+function getTransitionProfile({
+  index,
+  totalImages,
+  framesPerImage,
+  preset,
+}) {
+  const cfg = TRANSITION_PRESETS[preset] || TRANSITION_PRESETS.cinematic;
 
-  // last image → no dissolve out
+  // Last image → no dissolve
   if (index === totalImages - 1) {
-    duration = 0;
-    startOffset = framesPerImage;
+    return { duration: 0, startOffset: framesPerImage };
   }
+
+  const ratio = index === 0 ? cfg.first : cfg.middle;
+  const duration = Math.floor(framesPerImage * ratio);
+  const startOffset = framesPerImage - duration;
 
   return { duration, startOffset };
 }
@@ -50,8 +71,9 @@ async function renderFrameBasedVideo({
   fps,
   secondsPerImage = 6,
   oversample = 2,
+  transitionPreset = "cinematic", // 🔧 NEW (Phase 15B)
 }) {
-  console.log("🔥 PHASE 15A ENGINE ACTIVE 🔥");
+  console.log("🔥 PHASE 15B ENGINE ACTIVE 🔥");
 
   const totalImages = imagePaths.length;
   const framesPerImage = fps * secondsPerImage;
@@ -84,7 +106,7 @@ async function renderFrameBasedVideo({
     layerMeta.push({ w: resizedW, h: resizedH });
   }
 
-  // 🔒 Global camera path (PHASE 14 LOCKED)
+  // 🔒 Global camera path (LOCKED)
   const startX = camW * 0.1;
   const startY = camH * 0.1;
   const endX = camW * 0.4;
@@ -127,11 +149,12 @@ async function renderFrameBasedVideo({
     );
 
     const frameInImage = frame % framesPerImage;
-    const { duration, startOffset } = getTransitionProfile(
-      imgIndex,
+    const { duration, startOffset } = getTransitionProfile({
+      index: imgIndex,
       totalImages,
-      framesPerImage
-    );
+      framesPerImage,
+      preset: transitionPreset,
+    });
 
     const inTransition =
       duration > 0 &&
